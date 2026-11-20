@@ -1,0 +1,9 @@
+.venv/
+.cache/
+__pycache__/
+*.pyc
+.DS_Store
+# personal config lives in ~/.config/clockout — never in the repo
+.env
+secrets/
+secrets.env

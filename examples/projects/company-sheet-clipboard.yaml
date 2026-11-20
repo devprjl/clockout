@@ -1,0 +1,21 @@
+# One row per day, pasted into a shared Google Sheet via the clipboard.
+name: Acme website
+match:                                  # any rule matching = this project
+  remotes: ["*gitlab.example.com*acme/website*"]
+  gitlab_projects: ["acme/website", "acme/website-*"]
+  paths: ["~/code/acme/website"]
+overrides: {}                           # e.g. {person: "J. Doe", workdays: [sun, mon, tue, wed, thu, fri]}
+meetings:
+  recurring:
+    - {name: DSM, start: "2026-10-27", every_days: 2, hours: 0.5, skip_dates: [], note: "~20 min"}
+  one_off: []
+layout:
+  granularity: per_day                  # bullets of the day's tasks in one cell
+  columns:
+    - {header: Person,           value: person}
+    - {header: Date,             value: date,  format: "MMM d"}
+    - {header: Task Description, value: task}
+    - {header: Hours Spent,      value: hours, format: number}
+    - {header: Remarks,          value: remarks}
+destinations:
+  - {type: clipboard}

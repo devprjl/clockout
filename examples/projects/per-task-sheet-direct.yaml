@@ -1,0 +1,24 @@
+# One row per task, written straight into a Google Sheet through the Apps Script web app.
+name: Beta client portal
+match:
+  gitlab_projects: ["beta/portal-*"]
+overrides:
+  person: Jane D.
+meetings:
+  recurring:
+    - {name: Weekly sync, start: "2026-12-01", weekdays: [mon], hours: 1}
+  one_off: []
+layout:
+  granularity: per_task                 # each task gets its own row and hours
+  columns:
+    - {header: Date,      value: date,  format: "DD/MM/YYYY"}
+    - {header: Employee,  value: person}
+    - {header: Project,   value: "const:Beta portal"}
+    - {header: Ticket,    value: ticket}           # first issue/MR ref, e.g. "#21" or "!58"
+    - {header: Work done, value: task}
+    - {header: Time,      value: hours, format: "h:mm"}
+    - {header: Billable,  value: ask, default: "Yes", choices: ["Yes", "No"]}
+    - {header: Links,     value: refs, format: comma}
+destinations:
+  - {type: gsheet_webapp, url_env: BETA_SHEET_URL, token_env: BETA_SHEET_TOKEN, tab: Timesheet}
+  - {type: clipboard}

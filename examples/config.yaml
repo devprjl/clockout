@@ -1,0 +1,25 @@
+# ~/.config/clockout/config.yaml — your personal defaults. Any key can be overridden per project
+# under `overrides:` in projects/<slug>.yaml. Secrets go in secrets.env and are referenced by name.
+person: Your Name                 # as it appears in your timesheets
+timezone: Asia/Kathmandu
+workdays: [mon, tue, wed, thu, fri]
+work_hours: {start: "09:00", end: "18:00", max_focus: 7}   # max_focus: realistic focused hours/day incl. meetings
+hours_step: 0.5                   # round estimates to this
+holidays: []                      # ["2026-12-25", ...] → no work expected
+style: short, human, past-tense bullets; 3-8 words each
+# default_project: acme-web       # optional: used when the current folder isn't a known project
+
+sources:
+  gitlab:                         # one entry per GitLab instance; token scope: read_api
+    - {url: https://gitlab.example.com, token_env: GITLAB_TOKEN}
+  git:
+    emails: [you@example.com]     # emails you commit with
+    repos: []                     # extra local repos to scan (projects' match.paths are scanned anyway)
+  calendar:                       # only useful if your calendar exposes event titles
+    enabled: false
+    calendar_id: primary
+    dsm_pattern: (?i)\bdsm\b|stand-?up
+
+ignore:                           # activity you never want on a timesheet
+  gitlab_projects: []             # e.g. ["you/dotfiles", "sandbox/*"]
+  paths: []
