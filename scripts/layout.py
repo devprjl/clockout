@@ -1,7 +1,7 @@
 """Render entries into a project's timesheet columns.
 
 A layout is a list of columns, each {header, value, format?, default?}:
-  value:  person | date | task | hours | remarks | project | refs | ticket | blank | ask | const:<text>
+  value:  person | date | task | hours | remarks | project | refs | ticket | work_package | blank | ask | const:<text>
   format: dates  -> tokens YYYY YY MMMM MMM MM M DD D dddd ddd   e.g. "MMM d", "DD/MM/YYYY", "YYYY-MM-DD"
           hours  -> number | h:mm | ~number | minutes
           refs   -> lines | comma
@@ -68,6 +68,8 @@ def cell(entry: dict, col: dict) -> str:
         return _ticket(entry.get("refs", []))
     if value in ("person", "task", "remarks", "project"):
         return str(entry.get(value, "") or "")
+    if value == "work_package":  # set while drafting from OP#123 / "Ref: <name>"; empty = destination's default bucket
+        return str(entry.get("fields", {}).get("Work package", "") or col.get("default", ""))
     if value == "ask":
         return str(col.get("default", ""))
     return ""  # blank

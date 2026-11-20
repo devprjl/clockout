@@ -10,7 +10,7 @@ meetings:
 layout:                         # what the preview shows; OpenProject gets date, hours, work package, comment
   granularity: per_day
   columns:
-    - {header: Work package, value: ask}          # Claude asks / looks it up (scripts/op.py work-packages)
+    - {header: Work package, value: work_package} # from OP#123 / "Ref: <name>"; empty → default_work_package
     - {header: Date,         value: date, format: "YYYY-MM-DD"}
     - {header: Hours,        value: hours, format: number}
     - {header: Comment,      value: task}
@@ -20,4 +20,5 @@ destinations:
     token_env: OPENPROJECT_TOKEN        # My account → Access tokens → API → + API token
     project: acme-website               # project identifier from its URL
     activity: Development               # optional (scripts/op.py activities)
-    work_package: ask                   # ask | <id> | none (none only works on older versions)
+    work_package: from_refs             # from_refs | ask | <id> | none (none only works on older versions)
+    default_work_package: 101           # bucket for work without a reference, e.g. "General development"

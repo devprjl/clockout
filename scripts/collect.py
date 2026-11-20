@@ -24,6 +24,29 @@ from common import day_bounds, parse_range, tz
 warnings: list[str] = []
 
 
+DEFAULT_REFS = {
+    # work item ids: "OP#123" / "PP#123" in text, "OP-123" in branch names
+    "id_patterns": [r"(?:\bOP|\bPP)#(\d+)", r"(?i)\bop-(\d+)\b"],
+    # work item names: a line "Ref: <name>" / "Refs: <name>" (not followed by an id)
+    "name_patterns": [r"(?im)^[ \t]*refs?:[ \t]*(?![ \t]*(?:OP|PP)#\d)(\S.*?)[ \t]*$"],
+}
+
+
+def work_refs(item: dict, cfg: dict | None) -> dict:
+    cfg = {**DEFAULT_REFS, **(cfg or {})}
+    text = "\n".join(str(item.get(k) or "") for k in ("title", "message", "description", "branch"))
+    ids, names = [], []
+    for pat in cfg["id_patterns"]:
+        for m in re.findall(pat, text):
+            if m not in ids:
+                ids.append(m)
+    for pat in cfg["name_patterns"]:
+        for m in re.findall(pat, text):
+            if m.strip() and m.strip() not in names:
+                names.append(m.strip())
+    return {"ids": ids, "names": names}
+
+
 def _in_day(ts: str, start: datetime, end: datetime) -> bool:
     t = datetime.fromisoformat(ts.replace("Z", "+00:00"))
     return start <= t < end
@@ -56,6 +79,15 @@ class GitLab:
             if len(batch) < 100:
                 return
             page += 1
+
+    def merge_request(self, pid: int, iid: int) -> dict:
+        key = ("mr", pid, iid)
+        if key not in self._projects:
+            try:
+                self._projects[key] = self.get(f"/projects/{pid}/merge_requests/{iid}")
+            except requests.RequestException:
+                self._projects[key] = {}
+        return self._projects[key]
 
     def project(self, pid: int) -> dict:
         if pid not in self._projects:
@@ -109,7 +141,7 @@ def collect_gitlab(gl: GitLab, day: date, start, end, emails: set[str]) -> list[
             items.append({"source": "gitlab", "time": _local(ev["created_at"]), "project": proj, "kind": "push",
                           "title": f"{action} {push.get('ref_type')} {push.get('ref')}: "
                                    f"{push.get('commit_title') or ''} ({push.get('commit_count')} commits)",
-                          "url": ""})
+                          "branch": push.get("ref") or "", "url": ""})
             continue
         if ttype in ("Note", "DiffNote", "DiscussionNote"):
             note = ev.get("note") or {}
@@ -125,7 +157,12 @@ def collect_gitlab(gl: GitLab, day: date, start, end, emails: set[str]) -> list[
             iid = ev.get("target_iid")
             kind = f"{ttype or 'project'}:{action}"
             if ttype == "MergeRequest" and iid:
-                title, url = f"{title} !{iid}", f"{web}/-/merge_requests/{iid}"
+                mr = gl.merge_request(pid, iid)
+                items.append({"source": "gitlab", "time": _local(ev["created_at"]), "project": proj, "kind": kind,
+                              "title": f"{title} !{iid}", "url": f"{web}/-/merge_requests/{iid}",
+                              "description": (mr.get("description") or "")[:2000],
+                              "branch": mr.get("source_branch", "")})
+                continue
             elif ttype in ("Issue", "WorkItem") and iid:
                 title, url = f"{title} #{iid}", f"{web}/-/issues/{iid}"
         items.append({"source": "gitlab", "time": _local(ev["created_at"]), "project": proj,
@@ -142,8 +179,8 @@ def collect_gitlab(gl: GitLab, day: date, start, end, emails: set[str]) -> list[
                 if len(c.get("parent_ids") or []) > 1 or not _in_day(c["authored_date"], start, end):
                     continue  # merge commit, or authored another day (since/until use committed date)
                 items.append({"source": "gitlab", "time": _local(c["authored_date"]),
-                              "project": proj["path_with_namespace"], "kind": "commit",
-                              "title": c["title"], "url": c.get("web_url", ""), "sha": c["id"]})
+                              "project": proj["path_with_namespace"], "kind": "commit", "title": c["title"],
+                              "message": (c.get("message") or "")[:2000], "url": c.get("web_url", ""), "sha": c["id"]})
         except requests.RequestException as e:
             warnings.append(f"commits for {proj['path_with_namespace']}: {e}")
     return items
@@ -157,17 +194,20 @@ def collect_git(start, end, emails: set[str]) -> list[dict]:
             # --since/--until match committer date (rebases move it), so widen and filter on author date.
             ["git", "-C", path, "log", "--exclude=refs/stash", "--all", "--no-merges",
              f"--since={(start - timedelta(days=7)).isoformat()}", f"--until={(end + timedelta(days=1)).isoformat()}",
-             "--format=%H%x1f%aI%x1f%ae%x1f%s"],
+             "--format=%H%x1f%aI%x1f%ae%x1f%s%x1f%B%x1e"],
             capture_output=True, text=True)
         if out.returncode:
             warnings.append(f"git log failed in {path}: {out.stderr.strip()}")
             continue
-        for line in out.stdout.splitlines():
-            sha, ts, email, subject = line.split("\x1f", 3)
+        for rec in out.stdout.split("\x1e"):
+            if not rec.strip():
+                continue
+            sha, ts, email, subject, body = rec.strip("\n").split("\x1f", 4)
             if (emails and email.lower() not in emails) or not _in_day(ts, start, end):
                 continue
             items.append({"source": "git", "time": _local(ts), "project": os.path.basename(path),
-                          "repo_path": path, "kind": "commit", "title": subject, "url": "", "sha": sha})
+                          "repo_path": path, "kind": "commit", "title": subject, "message": body.strip()[:2000],
+                          "url": "", "sha": sha})
     return items
 
 
@@ -264,6 +304,12 @@ def collect_day(day: date, clients, emails, primary: str | None, use_git: bool, 
         items = per_project.get(slug, [])
         if not (items or sched or slug == primary):
             continue
+        refs_summary: dict = {"ids": {}, "names": {}}
+        for i in items:
+            i["work_refs"] = work_refs(i, proj.get("work_refs"))
+            for k in ("ids", "names"):
+                for r in i["work_refs"][k]:
+                    refs_summary[k][r] = refs_summary[k].get(r, 0) + 1
         times = [i["time"] for i in items]
         projects_out[slug] = {
             "name": proj["name"],
@@ -280,6 +326,7 @@ def collect_day(day: date, clients, emails, primary: str | None, use_git: bool, 
             "scheduled_hours": round(sum(m["hours"] for m in sched), 2),
             "first_activity": times[0] if times else None,
             "last_activity": times[-1] if times else None,
+            "work_refs": refs_summary,
             "work": items,
         }
     return {"date": day.isoformat(), "weekday": day.strftime("%A"), "projects": projects_out,

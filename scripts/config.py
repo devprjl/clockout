@@ -34,7 +34,7 @@ PROJECTS = HOME / "projects"
 GOOGLE = HOME / "google"
 
 WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
-VALUES = {"person", "date", "task", "hours", "remarks", "project", "refs", "ticket", "blank", "ask"}
+VALUES = {"person", "date", "task", "hours", "remarks", "project", "refs", "ticket", "work_package", "blank", "ask"}
 
 DEFAULTS: dict = {
     "person": "",
@@ -246,8 +246,15 @@ def validate() -> list[str]:
                 problems.append(f"{slug}: a layout column has no header")
             if v not in VALUES and not v.startswith("const:"):
                 problems.append(f"{slug}: column {c.get('header')!r} has unknown value {v!r}")
-        if p["layout"]["granularity"] not in ("per_day", "per_task"):
-            problems.append(f"{slug}: granularity must be per_day or per_task")
+        if p["layout"]["granularity"] not in ("per_day", "per_task", "per_work_package"):
+            problems.append(f"{slug}: granularity must be per_day, per_task or per_work_package")
+        import re as _re
+        for key in ("id_patterns", "name_patterns"):
+            for pat in (p.get("work_refs") or {}).get(key, []):
+                try:
+                    _re.compile(pat)
+                except _re.error as e:
+                    problems.append(f"{slug}: work_refs.{key} {pat!r} is not a valid regex: {e}")
         for d in p["destinations"]:
             try:
                 problems += [f"{slug}: {msg}" for msg in sinks.get(d.get("type", "")).check(d)]

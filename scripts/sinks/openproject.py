@@ -6,7 +6,9 @@ dest:
   token_env: OPENPROJECT_TOKEN                # My account → Access tokens → API
   project: my-project                         # project identifier (or numeric id)
   activity: Development                       # optional; time entry activity name
-  work_package: none | ask | <id>             # `ask` reads entry fields["Work package"]; required on 17+
+  work_package: from_refs | ask | <id> | none # from_refs/ask: entry fields["Work package"] (set while drafting
+                                              #   from OP#123 / "Ref: <name>" in commits/MRs); required on 17+
+  default_work_package: <id>                  # optional bucket for entries with no work package (e.g. General development)
   comment: task | first_line                  # optional; default task (all bullets)
 
 One time entry per entry with hours (date-only entries are skipped). Before writing, it looks for
@@ -132,15 +134,17 @@ def _payloads(entries, dest) -> list[tuple[dict, dict]]:
         comment = e["task"] if dest.get("comment", "task") == "task" else e["task"].split("\n")[0]
         if e.get("remarks"):
             comment = f"{comment}\n\n{e['remarks']}"
-        wp = None
-        if wp_mode == "ask":
-            m = re.match(r"\s*#?(\d+)", str(e.get("fields", {}).get(WP_FIELD, "")))  # "41", "#41", "41 Homepage"
-            wp = m.group(1) if m else None
+        wp, why = None, ""
+        m = re.match(r"\s*(?:OP|PP)?#?(\d+)", str(e.get("fields", {}).get(WP_FIELD, "")))  # "41", "#41", "OP#41 x"
+        if m and wp_mode in ("ask", "from_refs"):
+            wp, why = m.group(1), e.get("fields", {}).get("Work package source") or "from entry"
         elif re.fullmatch(r"\d+", wp_mode):
-            wp = wp_mode
+            wp, why = wp_mode, "fixed"
+        if not wp and dest.get("default_work_package"):
+            wp, why = str(dest["default_work_package"]), "default (no reference)"
         out.append((e, {"spentOn": e["date"], "hours": iso_duration(e["hours"]), "comment": comment,
                         "project": str(dest["project"]), "activity": dest.get("activity") or "(default)",
-                        "workPackage": wp}))
+                        "workPackage": wp, "why": why}))
     return out
 
 
@@ -151,9 +155,13 @@ def preview(entries, dest, layout) -> str:
     skipped = len(entries) - len(rows)
     lines = [f"OpenProject time entries → project '{dest['project']}' at {url}"
              f" (activity: {dest.get('activity') or 'server default'}, work package: {dest.get('work_package', 'none')})",
-             "| Date | Hours | Duration sent | Work package | Comment |", "|---|---|---|---|---|"]
+             "| Date | Hours | Duration sent | Work package | Why this work package | Comment |",
+             "|---|---|---|---|---|---|"]
     for e, b in rows:
-        lines.append(f"| {b['spentOn']} | {float(e['hours']):g} | {b['hours']} | {b['workPackage'] or '-'} | "
+        label = e.get("fields", {}).get(WP_FIELD) or (f"#{b['workPackage']}" if b["workPackage"] else "-")
+        if b["workPackage"] and not str(label).lstrip("#OP").startswith(str(b["workPackage"])):
+            label = f"#{b['workPackage']}"
+        lines.append(f"| {b['spentOn']} | {float(e['hours']):g} | {b['hours']} | {label} | {b['why'] or '-'} | "
                      + b["comment"].replace("\n", "<br>") + " |")
     lines.append(f"{len(rows)} entries, {sum(float(e['hours']) for e, _ in rows):g}h total"
                  + (f"; {skipped} date-only entr{'y' if skipped == 1 else 'ies'} not sent" if skipped else ""))
@@ -186,7 +194,8 @@ def export(entries, dest, layout, opts) -> str:
         missing = [e["date"] for e, b in _payloads(todo, dest) if not b["workPackage"]]
         if missing:
             sys.exit(f"error: openproject {version}: time must be logged on a work package here; set "
-                     f"`work_package: <id>` (or `ask`) on this destination — missing for {missing}")
+                     f"`work_package` (from_refs/ask/<id>) or `default_work_package` on this destination — "
+                     f"missing for {missing}")
     existing = op.my_entries(proj["id"], dates)
     if getattr(opts, "dry_run", False):
         return (f"dry run: OpenProject {version}, project '{proj['name']}' found; would log {len(todo)} entries"
@@ -203,7 +212,7 @@ def export(entries, dest, layout, opts) -> str:
 
     created = []
     for e, b in _payloads(todo, dest):
-        if str(dest.get("work_package", "none")) == "ask" and not b["workPackage"]:
+        if str(dest.get("work_package", "none")) in ("ask", "from_refs") and not b["workPackage"]:
             sys.exit(f"error: openproject: entry {e['date']} needs fields['{WP_FIELD}'] (work package id)")
         links = {"project": {"href": proj_href}}
         if activity_href:

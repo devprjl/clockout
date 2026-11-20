@@ -109,6 +109,7 @@ Each column in a project's `layout.columns` has a `header` (exact text from the 
 | `person`, `date`, `task`, `hours`, `remarks` | the usual fields |
 | `project` | the code project (e.g. `group/repo`) |
 | `ticket` | first issue/MR ref of the entry, e.g. `#21`, `!58` |
+| `work_package` | the work package the entry is logged on (from `OP#123` / `Ref: <name>`); empty = the destination's default bucket |
 | `refs` | links to the MRs and issues behind the entry (`format: lines` or `comma`) |
 | `const:<text>` | the same text on every row |
 | `ask` | Claude asks you (optional `default`, `choices`) |
@@ -155,6 +156,17 @@ Enable the Sheets API in a Google Cloud project, then either:
    $PY $S/op.py logged        --project <slug> --date 2026-11-16..2026-11-20   # what you already logged
    ```
 4. `--preview` lists exactly what will be sent (date, duration, work package, activity, comment). `--dry-run` checks the server (project, permissions, entries you already logged) without writing. Re-running a day is blocked. `--replace-date` deletes and re-logs only **your own** entries for those dates; teammates' entries are never touched.
+
+#### Link commits to work packages
+Mention the work package in a commit message, merge request title/description, or branch name, and clockout logs that work's time on it:
+
+```
+Apply member discount once
+
+Ref: OP#42                     ← by id (also works anywhere in the text, or as branch fix/OP-42-…)
+Ref: Export ledger as CSV      ← by name (matched against the project's work packages)
+```
+Set the destination to `work_package: from_refs` with `default_work_package: <id>` (a bucket such as *General development* for work without a reference) and the layout's `granularity: per_work_package`. Each day then becomes one time entry per work package. `OP#42` is also the syntax OpenProject's built-in **GitLab integration** uses: with its webhook configured, the MR and commits show up on the work package's GitLab tab. Override the patterns per project with `work_refs: {id_patterns: [...], name_patterns: [...]}`.
 
 Your user needs the **Log own time** permission in the project (the default *Member* role has it). Admin rights aren't needed.
 
