@@ -12,7 +12,7 @@ To add a destination: add a module here and list it in AVAILABLE.
 """
 import importlib
 
-AVAILABLE = ["clipboard", "tsv", "gsheet_webapp", "gsheet_api"]
+AVAILABLE = ["clipboard", "tsv", "gsheet_webapp", "gsheet_api", "openproject"]
 
 
 def get(name: str):

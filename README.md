@@ -127,6 +127,7 @@ Formats:
 | `tsv` | prints tab-separated rows | |
 | `gsheet_webapp` | appends to **your own** Google Sheet through a small Apps Script; no Google Cloud, sheet stays private | `url_env`, `token_env`, `tab` |
 | `gsheet_api` | appends via the Sheets API | `sheet_id`, `tab` |
+| `openproject` | logs **time entries** in OpenProject (API v3), one per entry | `url_env`, `token_env`, `project`, `activity`, `work_package` |
 
 Both Google Sheet destinations:
 - check that the sheet's header row still matches the layout, and stop if it doesn't;
@@ -143,6 +144,21 @@ Both Google Sheet destinations:
 Enable the Sheets API in a Google Cloud project, then either:
 - save a service-account key as `~/.config/clockout/google/service-account.json` and share the sheet with its email, or
 - save an OAuth Desktop client as `~/.config/clockout/google/credentials.json` and run `scripts/auth.py sheets`.
+
+### OpenProject (`openproject`)
+1. In OpenProject: avatar → **My account** → **Access tokens** → **API** → **+ API token**. Put it in `secrets.env` as `OPENPROJECT_TOKEN`, and the instance URL as `OPENPROJECT_URL`.
+2. In the project file, add the destination (see [`examples/projects/openproject.yaml`](examples/projects/openproject.yaml)): the project identifier, an optional activity (Development, Testing…) and the work package. Use a fixed id, or `ask` to have Claude ask per entry. On **OpenProject 17+, time must be logged on a work package**.
+3. Lookups that work without admin rights:
+   ```bash
+   $PY $S/op.py work-packages --project <slug> --query search    # find a work package id
+   $PY $S/op.py activities    --project <slug>                   # allowed activities
+   $PY $S/op.py logged        --project <slug> --date 2026-11-16..2026-11-20   # what you already logged
+   ```
+4. `--preview` lists exactly what will be sent (date, duration, work package, activity, comment). `--dry-run` checks the server (project, permissions, entries you already logged) without writing. Re-running a day is blocked. `--replace-date` deletes and re-logs only **your own** entries for those dates; teammates' entries are never touched.
+
+Your user needs the **Log own time** permission in the project (the default *Member* role has it). Admin rights aren't needed.
+
+> **What about OpenProject's MCP server?** OpenProject 17 ships one, but it's an Enterprise feature and has no time-entry tools (work packages, projects, users, etc. only), so it can't log time. clockout writes time through the REST API instead, with preview, duplicate guard and replace. If your instance has the MCP enabled, Claude can still use it for lookups.
 
 ## Sources
 
@@ -171,7 +187,8 @@ scripts/config.py      personal + project config, project detection, validation
 scripts/collect.py     activity → routed per project (GitLab, git log, meetings, Calendar)
 scripts/layout.py      entries → a project's columns and formats
 scripts/export.py      entries → each project's destinations
-scripts/sinks/         clipboard, tsv, gsheet_webapp, gsheet_api
+scripts/sinks/         clipboard, tsv, gsheet_webapp, gsheet_api, openproject
+scripts/op.py          OpenProject lookups (work packages, activities, logged time)
 scripts/auth.py        Google OAuth (gsheet_api / Calendar only)
 apps-script/Code.gs    sheet-side writer for gsheet_webapp
 examples/              config.yaml, secrets.env, projects/*.yaml

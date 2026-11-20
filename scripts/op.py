@@ -1,0 +1,54 @@
+"""OpenProject lookups for a project's `openproject` destination (no MCP or Enterprise needed).
+
+  op.py work-packages --project <slug> [--query text]     # pick a work package for `work_package: ask`
+  op.py activities    --project <slug>                    # time entry activities you can use
+  op.py logged        --project <slug> --date A[..B]      # what you already logged (to compare/verify)
+If the user's OpenProject also exposes its MCP server, Claude may use it for lookups instead;
+time entries are always written by export.py (preview, duplicate guard, replace).
+"""
+import argparse
+import json
+
+import config
+from common import parse_range
+from config import secret
+from sinks.openproject import OpenProject
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("cmd", choices=["work-packages", "activities", "logged"])
+    ap.add_argument("--project", required=True, help="clockout project slug")
+    ap.add_argument("--query", default="")
+    ap.add_argument("--date", default="today")
+    a = ap.parse_args()
+
+    dest = next((d for d in config.project(a.project)["destinations"] if d.get("type") == "openproject"), None)
+    if not dest:
+        raise SystemExit(f"error: {a.project} has no openproject destination")
+    op = OpenProject(dest.get("url") or secret(dest.get("url_env")), secret(dest["token_env"]))
+    proj = op.project(dest["project"])
+
+    if a.cmd == "work-packages":
+        filters = [{"status": {"operator": "o", "values": []}}]
+        if a.query:
+            filters.append({"subjectOrId": {"operator": "**", "values": [a.query]}})
+        res = op.req("GET", f"/api/v3/projects/{proj['id']}/work_packages",
+                     params={"filters": json.dumps(filters), "pageSize": 50})
+        out = [{"id": w["id"], "subject": w["subject"], "status": w["_links"]["status"]["title"]}
+               for w in res["_embedded"]["elements"]]
+    elif a.cmd == "activities":
+        wps = op.req("GET", f"/api/v3/projects/{proj['id']}/work_packages", params={"pageSize": 1})
+        first = next((str(w["id"]) for w in wps["_embedded"]["elements"]), None)
+        out = sorted(OpenProject.activities(op.schema(proj["_links"]["self"]["href"], first)))
+    else:
+        dates = [d.isoformat() for d in parse_range(a.date, config.settings(a.project))]
+        out = [{"id": e["id"], "date": e["spentOn"], "hours": e["hours"],
+                "work_package": (e["_links"].get("entity") or e["_links"].get("workPackage") or {}).get("title"),
+                "activity": e["_links"]["activity"].get("title"), "comment": e["comment"]["raw"]}
+               for e in op.my_entries(proj["id"], dates)]
+    print(json.dumps({"project": proj["identifier"], a.cmd: out}, indent=2, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()
