@@ -51,14 +51,31 @@ meetings ───┘   (real work) projects       └─ project B ─ layout B
 
 ## Install
 
-Requirements: [Claude Code](https://claude.com/claude-code), Python 3.10+, git.
+You need [Claude Code](https://claude.com/claude-code) and [uv](https://docs.astral.sh/uv/). uv runs clockout's Python scripts and fetches their dependencies automatically, so there's nothing else to set up.
 
 ```bash
-git clone https://github.com/devprjl/clockout.git ~/code/github/clockout
-cd ~/code/github/clockout
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-ln -s "$PWD" ~/.claude/skills/clockout
+brew install uv            # or: curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
+
+Then, in Claude Code:
+
+```
+/plugin install clockout --marketplace devprjl/clockout
+```
+
+On older Claude Code versions, use two steps instead: `/plugin marketplace add devprjl/clockout`, then `/plugin install clockout@clockout`.
+
+Run it as **`/clockout:clockout`** (plugin skills are namespaced), or just say "fill my timesheet". Start with `/clockout:clockout setup`.
+
+### Updating
+New versions arrive when the plugin's version is bumped. Update with `/plugin marketplace update clockout`, then `/plugin update clockout@clockout`, or turn on auto-update for the marketplace under `/plugin` → Marketplaces. Your settings in `~/.config/clockout/` are never touched by installs, updates or uninstalls.
+
+### Without the plugin (manual)
+```bash
+git clone https://github.com/devprjl/clockout.git ~/code/github/clockout
+ln -s ~/code/github/clockout/skills/clockout ~/.claude/skills/clockout   # then run it as /clockout
+```
+uv is still used to run the scripts. Don't install it both ways, because you'd get two clockout skills.
 
 ## Set up (once)
 
@@ -79,10 +96,10 @@ Open Claude Code in a project repo and run:
 
 Run `/clockout setup` in any other project repo to add it. If the timesheet's columns change, say *"our timesheet columns changed"* and paste the new header.
 
-Everything is plain YAML in `~/.config/clockout/`, and you can edit it by hand. See [`examples/`](examples/) for fully commented files. Check your setup with:
+Everything is plain YAML in `~/.config/clockout/`, and you can edit it by hand. See [`skills/clockout/examples/`](skills/clockout/examples/) for fully commented files. Check your setup with:
 
 ```bash
-~/.claude/skills/clockout/.venv/bin/python ~/.claude/skills/clockout/scripts/config.py validate
+uv run --script <path to clockout>/skills/clockout/scripts/config.py validate   # or ask Claude: "validate my clockout config"
 ```
 
 ## Daily use
@@ -139,7 +156,7 @@ Both Google Sheet destinations:
 
 ### Google Sheet via Apps Script (`gsheet_webapp`)
 1. Generate a token with `python3 -c "import secrets;print(secrets.token_urlsafe(32))"` and add it to `secrets.env`, e.g. `MY_SHEET_TOKEN=...`.
-2. In the sheet, open **Extensions → Apps Script**. Paste [`apps-script/Code.gs`](apps-script/Code.gs), set `TOKEN` to the same value, and save.
+2. In the sheet, open **Extensions → Apps Script**. Paste [`skills/clockout/apps-script/Code.gs`](skills/clockout/apps-script/Code.gs), set `TOKEN` to the same value, and save.
 3. Click **Deploy → New deployment → Web app**. Set *Execute as* to **Me** and *Who has access* to **Anyone**, then authorise it. Add the URL to `secrets.env`, e.g. `MY_SHEET_URL=...`.
 4. In the project file, add `- {type: gsheet_webapp, url_env: MY_SHEET_URL, token_env: MY_SHEET_TOKEN, tab: Timesheet}`. Set the sheet's sharing back to **Restricted**.
 
@@ -155,13 +172,14 @@ Enable the Sheets API in a Google Cloud project, then either:
      openproject: {url_env: OPENPROJECT_URL, token_env: OPENPROJECT_TOKEN}
    ```
    A project on a different server or account just sets its own `url_env`/`token_env` on its destination; those win.
-2. In the project file, add the destination (see [`examples/projects/openproject.yaml`](examples/projects/openproject.yaml)): the project identifier, a default activity (Development, Testing…) and the work package. Use a fixed id, `from_refs` (below), or `ask` to have Claude ask per entry. If your team picks the activity per entry, add a layout column `{header: Activity, value: ask, default: Development, choices: [...]}`; each entry's answer overrides the default. On **OpenProject 17+, time must be logged on a work package**.
-3. Lookups that work without admin rights:
+2. In the project file, add the destination (see [`skills/clockout/examples/projects/openproject.yaml`](skills/clockout/examples/projects/openproject.yaml)): the project identifier, a default activity (Development, Testing…) and the work package. Use a fixed id, `from_refs` (below), or `ask` to have Claude ask per entry. If your team picks the activity per entry, add a layout column `{header: Activity, value: ask, default: Development, choices: [...]}`; each entry's answer overrides the default. On **OpenProject 17+, time must be logged on a work package**.
+3. Lookups that work without admin rights (or just ask Claude, e.g. "which work packages are open in tiny-ledger?"):
    ```bash
-   $PY $S/op.py work-packages --project <slug> --query search    # find a work package id
-   $PY $S/op.py activities    --project <slug>                   # allowed activities
-   $PY $S/op.py logged        --project <slug> --date 2026-11-16..2026-11-20   # what you already logged
-   $PY $S/op.py delete        --project <slug> --id 8,9         # delete your own entries (e.g. duplicates)
+   S=<path to clockout>/skills/clockout/scripts
+   uv run --script $S/op.py work-packages --project <slug> --query search    # find a work package id
+   uv run --script $S/op.py activities    --project <slug>                   # allowed activities
+   uv run --script $S/op.py logged        --project <slug> --date 2026-11-16..2026-11-20   # what you already logged
+   uv run --script $S/op.py delete        --project <slug> --id 8,9         # delete your own entries (e.g. duplicates)
    ```
 4. `--preview` lists exactly what will be sent (date, duration, work package, activity, comment). `--dry-run` checks the server (project, permissions, entries you already logged) without writing. Re-running a day with entries already logged is blocked until you choose: `--append` adds next to them (deletes nothing, skips identical entries; handy for a second run later in the day), or `--replace-date` deletes and re-logs only **your own entries that clockout created** for those dates. Every entry clockout logs ends with `[clockout]` in its comment; time you logged by hand is never deleted, only reported. Teammates' entries are never touched. Hours are checked before anything is sent (> 0, ≤ 24 per day), comments are trimmed to OpenProject's 1000-character limit, and a failure part-way reports exactly what was written so a re-run with `--append` can finish the rest.
 
@@ -200,20 +218,22 @@ Your user needs the **Log own time** permission in the project (the default *Mem
 
 ## Without Claude
 ```bash
-S=~/.claude/skills/clockout/scripts; PY=~/.claude/skills/clockout/.venv/bin/python
-$PY $S/collect.py --date yesterday             # activity routed per project (JSON)
-$PY $S/config.py detect                        # which project is this folder?
-$PY $S/export.py --entries entries.json --preview   # exactly what each destination gets
-$PY $S/export.py --entries entries.json --dry-run   # check against destinations, write nothing
-$PY $S/export.py --entries entries.json        # each project → its destinations
+S=<path to clockout>/skills/clockout/scripts
+uv run --script $S/collect.py --date yesterday                 # activity routed per project (JSON)
+uv run --script $S/config.py detect                            # which project is this folder?
+uv run --script $S/export.py --entries entries.json --preview  # exactly what each destination gets
+uv run --script $S/export.py --entries entries.json --dry-run  # check against destinations, write nothing
+uv run --script $S/export.py --entries entries.json            # each project → its destinations
 ```
 
 ## Adding a destination
-Destinations live in `scripts/sinks/`. Each one is a module with `DESCRIPTION`, `REQUIRED` (config keys) and `export(entries, dest, layout, opts) -> str`; `check(dest)` is optional. Add the module and list it in `scripts/sinks/__init__.py`. Entries carry `project`, `refs` and `fields` as well as the layout columns. Tools that file time against projects or work items can use those fields, and drafting and layouts stay the same.
+Destinations live in `skills/clockout/scripts/sinks/`. Each one is a module with `DESCRIPTION`, `REQUIRED` (config keys) and `export(entries, dest, layout, opts) -> str`; `check(dest)` is optional. Add the module and list it in `scripts/sinks/__init__.py`. Entries carry `project`, `refs` and `fields` as well as the layout columns. Tools that file time against projects or work items can use those fields, and drafting and layouts stay the same.
 
 ## Layout
 ```
-SKILL.md               what Claude follows (/clockout)
+.claude-plugin/        plugin.json (name, version) + marketplace.json (this repo is its own marketplace)
+skills/clockout/
+SKILL.md               what Claude follows (/clockout:clockout)
 scripts/config.py      personal + project config, project detection, validation
 scripts/collect.py     activity → routed per project (GitLab, git log, meetings, Calendar)
 scripts/layout.py      entries → a project's columns and formats

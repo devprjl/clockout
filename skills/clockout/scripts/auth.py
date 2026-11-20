@@ -1,3 +1,13 @@
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#   "requests>=2.31",
+#   "PyYAML>=6.0",
+#   "google-api-python-client>=2.100",
+#   "google-auth-oauthlib>=1.2",
+#   "google-auth>=2.23",
+# ]
+# ///
 """One-time Google OAuth consent (only for the gsheet_api destination and Calendar). Tokens go to ~/.config/clockout/google/.
 
   auth.py calendar   # sign in with your WORK account  -> read-only calendar

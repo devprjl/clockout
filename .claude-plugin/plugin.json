@@ -1,0 +1,10 @@
+{
+  "name": "clockout",
+  "version": "0.3.0",
+  "description": "Draft your timesheet from what you actually did (GitLab, git, meetings) and export it after review: clipboard, Google Sheets or OpenProject time entries.",
+  "author": { "name": "devprjl", "url": "https://github.com/devprjl" },
+  "homepage": "https://github.com/devprjl/clockout",
+  "repository": "https://github.com/devprjl/clockout",
+  "license": "MIT",
+  "keywords": ["timesheet", "time-tracking", "gitlab", "openproject", "google-sheets"]
+}

@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 import config
 
 ROOT = Path(__file__).resolve().parent.parent
-CACHE = ROOT / ".cache"
+CACHE = config.HOME / "drafts"
 
 # Google: separate logins so each account only gets what it needs.
 SCOPES = {

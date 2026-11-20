@@ -1,6 +1,16 @@
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#   "requests>=2.31",
+#   "PyYAML>=6.0",
+#   "google-api-python-client>=2.100",
+#   "google-auth-oauthlib>=1.2",
+#   "google-auth>=2.23",
+# ]
+# ///
 """Send approved entries to each project's destinations, in each project's layout.
 
-  export.py --entries .cache/entries-2026-11-20.json             # each project's own destinations
+  export.py --entries entries-2026-11-20.json                    # each project's own destinations
   export.py --entries FILE --to clipboard                        # override destination type(s)
   export.py --entries FILE --replace-date                        # let sheet/API destinations replace same-day rows
   export.py --entries FILE --append                              # API destinations: add next to same-day entries, delete nothing

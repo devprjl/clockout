@@ -1,3 +1,13 @@
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#   "requests>=2.31",
+#   "PyYAML>=6.0",
+#   "google-api-python-client>=2.100",
+#   "google-auth-oauthlib>=1.2",
+#   "google-auth>=2.23",
+# ]
+# ///
 """OpenProject lookups for a project's `openproject` destination (no MCP or Enterprise needed).
 
   op.py work-packages --project <slug> [--query text]     # pick a work package for `work_package: ask`

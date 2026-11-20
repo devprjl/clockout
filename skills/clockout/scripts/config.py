@@ -1,3 +1,13 @@
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#   "requests>=2.31",
+#   "PyYAML>=6.0",
+#   "google-api-python-client>=2.100",
+#   "google-auth-oauthlib>=1.2",
+#   "google-auth>=2.23",
+# ]
+# ///
 """clockout configuration: personal defaults + per-project profiles, kept outside the repo.
 
   $CLOCKOUT_HOME (default ~/.config/clockout)/

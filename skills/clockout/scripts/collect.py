@@ -1,3 +1,13 @@
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#   "requests>=2.31",
+#   "PyYAML>=6.0",
+#   "google-api-python-client>=2.100",
+#   "google-auth-oauthlib>=1.2",
+#   "google-auth>=2.23",
+# ]
+# ///
 """Collect real work activity per day and route it to configured projects, as JSON.
 
 Usage: collect.py [--date today|yesterday|YYYY-MM-DD|A..B] [--cwd DIR] [--no-gitlab] [--no-git] [--no-calendar]

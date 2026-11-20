@@ -1,0 +1,12 @@
+{
+  "name": "clockout",
+  "owner": { "name": "devprjl", "url": "https://github.com/devprjl" },
+  "description": "clockout: timesheets drafted from your real work",
+  "plugins": [
+    {
+      "name": "clockout",
+      "source": "./",
+      "description": "Draft your timesheet from GitLab/git activity and meetings; export to clipboard, Google Sheets or OpenProject."
+    }
+  ]
+}
