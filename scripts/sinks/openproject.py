@@ -12,10 +12,13 @@ dest:
   default_work_package: <id>                  # optional bucket for entries with no work package (e.g. General development)
   comment: task | first_line                  # optional; default task (all bullets)
 
-One time entry per entry with hours (date-only entries are skipped). Before writing, it looks for
-time entries you already logged in that project on those dates and stops, unless --replace-date,
-which deletes only those entries of yours first, or --append, which adds next to them (deletes nothing)
-and skips an entry identical to one already logged (same date, work package, duration and comment).
+One time entry per entry with hours (date-only entries are skipped). Every entry clockout creates ends
+with the tag "[clockout]" in its comment. Before writing, it looks for your time entries in that project
+on those dates and stops if there are any, unless:
+  --replace-date  deletes only YOUR entries tagged [clockout] on those dates, then logs; entries you
+                  logged by hand (untagged) are never deleted — they're kept and reported
+  --append        adds next to existing entries (deletes nothing), skipping identical ones
+Hours must be > 0 per entry and ≤ 24 per day; nothing is written if any entry is invalid.
 """
 from __future__ import annotations
 
@@ -30,6 +33,36 @@ from config import secret
 DESCRIPTION = "log time entries in OpenProject (API v3)"
 REQUIRED = ["token_env", "project"]
 WP_FIELD = "Work package"
+TAG = "[clockout]"
+
+
+def tagged(comment: str) -> bool:
+    return TAG in (comment or "")
+
+
+def validate_hours(entries) -> list[str]:
+    """Problems with hours, before anything is sent."""
+    problems, per_day = [], {}
+    for e in entries:
+        h, has_task = e.get("hours"), bool(str(e.get("task") or "").strip())
+        if h in ("", None):
+            if has_task:
+                problems.append(f"{e['date']}: entry {e['task'].splitlines()[0][:40]!r} has no hours")
+            continue
+        try:
+            h = float(h)
+        except (TypeError, ValueError):
+            problems.append(f"{e['date']}: hours {h!r} is not a number")
+            continue
+        if h <= 0:
+            problems.append(f"{e['date']}: hours must be > 0 (got {h:g})" if has_task or h < 0 else
+                            f"{e['date']}: hours 0 — drop the entry or give it a date-only row")
+        elif h > 24:
+            problems.append(f"{e['date']}: {h:g} hours in one entry is more than a day")
+        else:
+            per_day[e["date"]] = per_day.get(e["date"], 0) + h
+    problems += [f"{d}: {t:g} hours logged in one day (> 24)" for d, t in per_day.items() if t > 24]
+    return problems
 ACTIVITY_FIELD = "Activity"
 
 
@@ -132,11 +165,19 @@ def _payloads(entries, dest) -> list[tuple[dict, dict]]:
     wp_mode = str(dest.get("work_package", "none"))
     out = []
     for e in entries:
-        if e.get("hours") in ("", None) or float(e["hours"]) <= 0:
+        try:
+            if e.get("hours") in ("", None) or float(e["hours"]) <= 0:
+                continue
+        except (TypeError, ValueError):
             continue
         comment = e["task"] if dest.get("comment", "task") == "task" else e["task"].split("\n")[0]
         if e.get("remarks"):
             comment = f"{comment}\n\n{e['remarks']}"
+        limit = int(dest.get("max_comment", 1000)) - len(TAG) - 3   # OpenProject: comments ≤ 1000 characters
+        truncated = len(comment) > limit
+        if truncated:
+            comment = comment[:limit - 1].rstrip() + "…"
+        comment = f"{comment}\n\n{TAG}"
         wp, why = None, ""
         m = re.match(r"\s*(?:OP|PP)?#?(\d+)", str(e.get("fields", {}).get(WP_FIELD, "")))  # "41", "#41", "OP#41 x"
         if m and wp_mode in ("ask", "from_refs"):
@@ -148,7 +189,7 @@ def _payloads(entries, dest) -> list[tuple[dict, dict]]:
         out.append((e, {"spentOn": e["date"], "hours": iso_duration(e["hours"]), "comment": comment,
                         "project": str(dest["project"]),
                         "activity": e.get("fields", {}).get(ACTIVITY_FIELD) or dest.get("activity") or "(default)",
-                        "workPackage": wp, "why": why}))
+                        "workPackage": wp, "why": why + (" · comment trimmed to 1000 chars" if truncated else "")}))
     return out
 
 
@@ -169,10 +210,17 @@ def preview(entries, dest, layout) -> str:
                      + b["comment"].replace("\n", "<br>") + " |")
     lines.append(f"{len(rows)} entries, {sum(float(e['hours']) for e, _ in rows):g}h total"
                  + (f"; {skipped} date-only entr{'y' if skipped == 1 else 'ies'} not sent" if skipped else ""))
+    lines.append(f"Each comment ends with {TAG} so clockout only ever replaces its own entries.")
+    problems = validate_hours(entries)
+    if problems:
+        lines.append("PROBLEMS (nothing will be sent until fixed): " + "; ".join(problems))
     return "\n".join(lines)
 
 
 def export(entries, dest, layout, opts) -> str:
+    problems = validate_hours(entries)
+    if problems:
+        sys.exit("error: openproject: invalid hours — nothing sent: " + "; ".join(problems))
     url = dest.get("url") or secret(dest.get("url_env"))
     op = OpenProject(url, secret(dest["token_env"]))
     proj = op.project(dest["project"])
@@ -201,6 +249,10 @@ def export(entries, dest, layout, opts) -> str:
                      f"`work_package` (from_refs/ask/<id>) or `default_work_package` on this destination — "
                      f"missing for {missing}")
     existing = op.my_entries(proj["id"], dates)
+    mine_tagged = [x for x in existing if tagged((x.get("comment") or {}).get("raw", ""))]
+    by_hand = [x for x in existing if x not in mine_tagged]
+    hand_note = (f"; kept {len(by_hand)} entr{'y' if len(by_hand) == 1 else 'ies'} you logged by hand "
+                 f"({', '.join(sorted({x['spentOn'] + ' ' + str(x.get('hours')) for x in by_hand}))})" if by_hand else "")
     append = getattr(opts, "append", False)
     dupes = set()
     if append:
@@ -216,14 +268,18 @@ def export(entries, dest, layout, opts) -> str:
                     + (f", activities {sorted(wanted)} ok" if wanted else ""))
         return (f"dry run: OpenProject {version}, project '{proj['name']}' found; would log {len(todo)} entries"
                 + (f", activities {sorted(wanted)} ok" if wanted else "")
-                + (f"; {len(existing)} of your entries already exist on those dates "
-                   f"({'would be replaced' if getattr(opts, 'replace_date', False) else 'would block, needs --replace-date'})"
+                + (f"; {len(existing)} of your entries already exist on those dates ({len(mine_tagged)} from clockout, "
+                   f"{len(by_hand)} by hand) — "
+                   + ("clockout's would be replaced, hand-logged kept" if getattr(opts, 'replace_date', False)
+                      else "would block: use --replace-date (replaces only clockout's) or --append")
                    if existing else "; no existing entries on those dates"))
     if existing and not append and not getattr(opts, "replace_date", False):
         sys.exit(f"error: openproject: you already logged {len(existing)} time entr"
                  f"{'y' if len(existing) == 1 else 'ies'} in {proj['identifier']} on "
-                 f"{sorted({e['spentOn'] for e in existing})}; re-run with --replace-date to replace them, or --append to add next to them")
-    for e in ([] if append else existing):
+                 f"{sorted({e['spentOn'] for e in existing})} ({len(mine_tagged)} by clockout, {len(by_hand)} by hand); "
+                 "re-run with --replace-date to replace clockout's entries (hand-logged ones are kept), "
+                 "or --append to add next to them")
+    for e in ([] if append else mine_tagged):   # never delete hand-logged (untagged) entries
         op.req("DELETE", f"/api/v3/time_entries/{e['id']}")
 
     created = []
@@ -238,8 +294,15 @@ def export(entries, dest, layout, opts) -> str:
         if b["workPackage"]:
             links[wp_key] = {"href": f"/api/v3/work_packages/{b['workPackage']}"}
         body = {"hours": b["hours"], "spentOn": b["spentOn"], "comment": {"raw": b["comment"]}, "_links": links}
-        res = op.req("POST", "/api/v3/time_entries", data=json.dumps(body))
+        try:
+            res = op.req("POST", "/api/v3/time_entries", data=json.dumps(body))
+        except SystemExit as err:
+            total = len(todo) - len(dupes)
+            sys.exit(f"{err}\nopenproject: PARTIAL — written {len(created)} of {total} entries (ids {created}); "
+                     f"failed at {b['spentOn']} work package {b['workPackage']}. Fix that entry and re-run with "
+                     "--append (identical entries already written are skipped).")
         created.append(res["id"])
     return (f"logged {len(created)} time entries in '{proj['name']}' (OpenProject {version}); "
             + (f"appended next to {len(existing)} existing, {len(dupes)} duplicates skipped" if append
-               else f"replaced {len(existing)}") + f" — {op.base}/projects/{proj['identifier']}/cost_reports")
+               else f"replaced {len(mine_tagged)} of clockout's" + hand_note)
+            + f" — {op.base}/projects/{proj['identifier']}/cost_reports")

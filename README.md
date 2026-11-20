@@ -163,9 +163,20 @@ Enable the Sheets API in a Google Cloud project, then either:
    $PY $S/op.py logged        --project <slug> --date 2026-11-16..2026-11-20   # what you already logged
    $PY $S/op.py delete        --project <slug> --id 8,9         # delete your own entries (e.g. duplicates)
    ```
-4. `--preview` lists exactly what will be sent (date, duration, work package, activity, comment). `--dry-run` checks the server (project, permissions, entries you already logged) without writing. Re-running a day with entries already logged is blocked until you choose: `--append` adds next to them (deletes nothing, skips identical entries; handy for a second run later in the day), or `--replace-date` deletes and re-logs only **your own** entries for those dates. Teammates' entries are never touched.
+4. `--preview` lists exactly what will be sent (date, duration, work package, activity, comment). `--dry-run` checks the server (project, permissions, entries you already logged) without writing. Re-running a day with entries already logged is blocked until you choose: `--append` adds next to them (deletes nothing, skips identical entries; handy for a second run later in the day), or `--replace-date` deletes and re-logs only **your own entries that clockout created** for those dates. Every entry clockout logs ends with `[clockout]` in its comment; time you logged by hand is never deleted, only reported. Teammates' entries are never touched. Hours are checked before anything is sent (> 0, ≤ 24 per day), comments are trimmed to OpenProject's 1000-character limit, and a failure part-way reports exactly what was written so a re-run with `--append` can finish the rest.
 
 #### Link commits to work packages
+References are found in commit messages, merge request titles/descriptions and branch names, and a commit inherits the references of the merge request it belongs to (so `Ref:` in the MR description is enough, even after squash or branch deletion):
+
+| You write | Linked to |
+|---|---|
+| `OP#42`, `op#42`, `OP #42`, `[OP#42]`, `Fixes OP#42`, `Refs OP#42` | work package 42 |
+| `Ref: Export ledger as CSV` | the work package with that name (asks if several match or none) |
+| branch `fix/OP-42-…` or OpenProject's **Git actions** branch `bug/42-…` | work package 42 |
+| GitLab's own branch `12-some-title`, `#12`, `!3` | nothing (those are GitLab numbers) |
+
+OpenProject's Git-actions "create branch" command makes an **empty** commit; clockout uses it for the link but doesn't count it as work.
+
 Mention the work package in a commit message, merge request title/description, or branch name, and clockout logs that work's time on it:
 
 ```

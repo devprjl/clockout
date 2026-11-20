@@ -64,25 +64,68 @@ def main():
             out.append({"id": int(i), "deleted": True, "date": e["spentOn"], "hours": e["hours"],
                         "work_package": (e["_links"].get("entity") or e["_links"].get("workPackage") or {}).get("title")})
     elif a.cmd == "resolve":
-        if a.id:
+        me = str(op.me()["id"])
+
+        def describe(w: dict, match: str) -> dict:
+            L = w["_links"]
+            assignee = (L.get("assignee") or {})
+            status = L["status"].get("title", "")
+            closed = False
             try:
-                w = op.req("GET", f"/api/v3/work_packages/{a.id.lstrip('#OP')}")
+                closed = bool(op.req("GET", L["status"]["href"]).get("isClosed"))
+            except SystemExit:
+                pass
+            d = {"match": match, "id": w["id"], "subject": w["subject"], "type": L["type"].get("title"),
+                 "status": status, "closed": closed, "project": L["project"].get("title"),
+                 "assignee": assignee.get("title"),
+                 "assigned_to_you": (assignee.get("href") or "").rstrip("/").split("/")[-1] == me}
+            flags = []
+            if match == "other_project":
+                flags.append(f"belongs to project {d['project']!r}, not {proj['identifier']!r}")
+            if closed:
+                flags.append(f"status is {status!r} (closed)")
+            if d["assignee"] and not d["assigned_to_you"]:
+                flags.append(f"assigned to {d['assignee']}")
+            d["flags"] = flags
+            return d
+
+        if a.id:
+            wid = a.id.strip().lstrip("#")
+            wid = wid[2:] if wid[:2].upper() in ("OP", "PP") else wid
+            wid = wid.lstrip("#").strip()
+            r = op.s.get(f"{op.base}/api/v3/work_packages/{wid}", timeout=30)
+            if r.status_code == 404:
+                out = {"match": "not_found", "id": wid,
+                       "flags": [f"OP#{wid} does not exist (or you can't see it) — pick another work package or the bucket"]}
+            elif r.status_code == 403:
+                out = {"match": "not_visible", "id": wid, "flags": [f"you can't access OP#{wid}"]}
+            elif not r.ok:
+                out = {"match": "error", "id": wid, "flags": [f"HTTP {r.status_code}"]}
+            else:
+                w = r.json()
                 same = w["_links"]["project"]["href"].rstrip("/").split("/")[-1] == str(proj["id"])
-                out = {"match": "id" if same else "other_project", "id": w["id"], "subject": w["subject"],
-                       "project": w["_links"]["project"]["title"]}
-            except SystemExit as e:
-                out = {"match": "none", "error": str(e)}
+                out = describe(w, "id" if same else "other_project")
         else:
-            name = a.name.strip().strip('"').lower()
-            filters = [{"subjectOrId": {"operator": "**", "values": [a.name.strip()]}}]
+            # "Ref:  improve ERROR messages. " → "improve ERROR messages"
+            text = " ".join(a.name.split()).strip(" \t.,;:!?)]}\"'(")
+            name = text.lower()
+            filters = [{"subjectOrId": {"operator": "**", "values": [text]}},
+                       {"status": {"operator": "*", "values": []}}]
             res = op.req("GET", f"/api/v3/projects/{proj['id']}/work_packages",
                          params={"filters": json.dumps(filters), "pageSize": 50})
-            els = [{"id": w["id"], "subject": w["subject"], "status": w["_links"]["status"]["title"]}
-                   for w in res["_embedded"]["elements"]]
-            exact = [w for w in els if w["subject"].strip().lower() == name]
-            out = ({"match": "exact", **exact[0]} if len(exact) == 1 else
-                   {"match": "contains", **els[0]} if len(els) == 1 else
-                   {"match": "ambiguous" if els else "none", "candidates": els})
+            els = res["_embedded"]["elements"]
+            exact = [w for w in els if " ".join(w["subject"].split()).lower() == name]
+            if len(exact) == 1:
+                out = describe(exact[0], "exact")
+            elif len(els) == 1:
+                out = describe(els[0], "contains")
+            else:
+                out = {"match": "ambiguous" if els else "none", "name": text,
+                       "candidates": [{"id": w["id"], "subject": w["subject"],
+                                       "status": w["_links"]["status"]["title"],
+                                       "assignee": (w["_links"].get("assignee") or {}).get("title")} for w in els],
+                       "flags": [f"{len(els)} work packages match {text!r} — ask which one" if els
+                                 else f"no work package matches {text!r} — ask the user"]}
     else:
         dates = [d.isoformat() for d in parse_range(a.date, config.settings(a.project))]
         out = [{"id": e["id"], "date": e["spentOn"], "hours": e["hours"],

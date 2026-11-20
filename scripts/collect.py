@@ -25,26 +25,58 @@ warnings: list[str] = []
 
 
 DEFAULT_REFS = {
-    # work item ids: "OP#123" / "PP#123" in text, "OP-123" in branch names
-    "id_patterns": [r"(?:\bOP|\bPP)#(\d+)", r"(?i)\bop-(\d+)\b"],
+    # work item ids in text: OP#123, op#123, OP #123, [OP#123], PP#123; semantic ids OP#TL-42
+    "id_patterns": [r"(?i)\b(?:OP|PP)[ \t]?#[ \t]?(\d+)\b", r"\b(?:OP|PP)#([A-Z][A-Z0-9_]*-\d+)\b"],
+    # work item ids in branch names: fix/OP-123-…, OpenProject "Git actions" <type>/123-… (NOT GitLab's 12-title)
+    "branch_patterns": [r"(?i)(?:^|/)(?:op|pp)-(\d+)(?=$|[-_/])", r"^[A-Za-z0-9._-]+/(\d+)-"],
     # work item names: a line "Ref: <name>" / "Refs: <name>" (not followed by an id)
-    "name_patterns": [r"(?im)^[ \t]*refs?:[ \t]*(?![ \t]*(?:OP|PP)#\d)(\S.*?)[ \t]*$"],
+    "name_patterns": [r"(?im)^[ \t]*refs?:[ \t]*(?![ \t]*(?:OP|PP)[ \t]?#)(\S.*?)[ \t]*$"],
 }
+TRAILING = " \t.,;:!?)]}\"'"
+
+
+def _add(lst: list, v: str):
+    if v and v not in lst:
+        lst.append(v)
 
 
 def work_refs(item: dict, cfg: dict | None) -> dict:
+    """References in the item's own text (title/message/description) and its own branch."""
     cfg = {**DEFAULT_REFS, **(cfg or {})}
-    text = "\n".join(str(item.get(k) or "") for k in ("title", "message", "description", "branch"))
+    text = "\n".join(str(item.get(k) or "") for k in ("title", "message", "description"))
     ids, names = [], []
     for pat in cfg["id_patterns"]:
         for m in re.findall(pat, text):
-            if m not in ids:
-                ids.append(m)
+            _add(ids, m)
+    for branch in [item.get("branch")] + list(item.get("branches") or []):
+        for pat in cfg["branch_patterns"]:
+            for m in re.findall(pat, str(branch or "")):
+                _add(ids, m)
     for pat in cfg["name_patterns"]:
         for m in re.findall(pat, text):
-            if m.strip() and m.strip() not in names:
-                names.append(m.strip())
+            _add(names, " ".join(m.split()).strip(TRAILING))
     return {"ids": ids, "names": names}
+
+
+def inherited_refs(item: dict, cfg: dict | None) -> dict:
+    """References a commit inherits from the merge requests it belongs to (title, description, source branch)."""
+    out = {"ids": [], "names": []}
+    for mr in item.get("mrs") or []:
+        r = work_refs({"title": mr.get("title"), "description": mr.get("description"),
+                       "branch": mr.get("source_branch")}, cfg)
+        for k in out:
+            for v in r[k]:
+                _add(out[k], v)
+    return out
+
+
+def annotate_commit(item: dict) -> dict:
+    msg = item.get("message") or item.get("title") or ""
+    item["revert"] = item["title"].startswith('Revert "') or "This reverts commit" in msg
+    co = re.findall(r"(?im)^co-authored-by:[ \t]*(.+?)[ \t]*$", msg)
+    if co:
+        item["co_authors"] = co
+    return item
 
 
 def _in_day(ts: str, start: datetime, end: datetime) -> bool:
@@ -121,6 +153,8 @@ def collect_gitlab(gl: GitLab, day: date, start, end, emails: set[str]) -> list[
     names = {me.get("name", "").lower(), me.get("username", "").lower()} - {""}
     items: list[dict] = []
     pushed: set[int] = set()
+    pushes: list = []          # (pid, push_data, push item) → which branch each commit was pushed to
+    mrs_seen: set = set()      # (pid, iid) → commits inherit the MR's references
     try:
         events = list(gl.paged(f"/users/{me['id']}/events", sort="asc",
                                after=(day - timedelta(days=1)).isoformat(),
@@ -131,6 +165,7 @@ def collect_gitlab(gl: GitLab, day: date, start, end, emails: set[str]) -> list[
     for ev in events:
         if not _in_day(ev["created_at"], start, end):
             continue
+        review_note = False
         pid = ev.get("project_id")
         proj = gl.project(pid)["path_with_namespace"] if pid else ""
         web = gl.project(pid).get("web_url", "") if pid else ""
@@ -138,15 +173,23 @@ def collect_gitlab(gl: GitLab, day: date, start, end, emails: set[str]) -> list[
         title, url = ev.get("target_title") or "", ""
         if push := ev.get("push_data"):
             pushed.add(pid)
-            items.append({"source": "gitlab", "time": _local(ev["created_at"]), "project": proj, "kind": "push",
-                          "title": f"{action} {push.get('ref_type')} {push.get('ref')}: "
-                                   f"{push.get('commit_title') or ''} ({push.get('commit_count')} commits)",
-                          "branch": push.get("ref") or "", "url": ""})
+            item = {"source": "gitlab", "time": _local(ev["created_at"]), "project": proj, "kind": "push",
+                    "title": f"{action} {push.get('ref_type')} {push.get('ref')}: "
+                             f"{push.get('commit_title') or ''} ({push.get('commit_count')} commits)",
+                    "branch": push.get("ref") or "", "url": ""}
+            items.append(item)
+            if push.get("ref_type") == "branch" and push.get("commit_to") and push.get("commit_count"):
+                pushes.append((pid, push, item))
             continue
         if ttype in ("Note", "DiffNote", "DiscussionNote"):
             note = ev.get("note") or {}
             ntype, iid = note.get("noteable_type", ""), note.get("noteable_iid")
             kind = f"comment:{ntype}"
+            if ntype == "MergeRequest" and iid:
+                mr = gl.merge_request(pid, iid)
+                mrs_seen.add((pid, iid))
+                if (mr.get("author") or {}).get("username") not in (None, me.get("username")):
+                    review_note = True
             title = f"{title} {('!' if ntype == 'MergeRequest' else '#') + str(iid) if iid else ''}".strip()
             body = (note.get("body") or "").strip().replace("\n", " ")
             if body:
@@ -158,31 +201,87 @@ def collect_gitlab(gl: GitLab, day: date, start, end, emails: set[str]) -> list[
             kind = f"{ttype or 'project'}:{action}"
             if ttype == "MergeRequest" and iid:
                 mr = gl.merge_request(pid, iid)
+                mrs_seen.add((pid, iid))
+                author = (mr.get("author") or {}).get("username")
                 items.append({"source": "gitlab", "time": _local(ev["created_at"]), "project": proj, "kind": kind,
                               "title": f"{title} !{iid}", "url": f"{web}/-/merge_requests/{iid}",
                               "description": (mr.get("description") or "")[:2000],
-                              "branch": mr.get("source_branch", "")})
+                              "branch": mr.get("source_branch", ""), "mr_author": author,
+                              # approving/merging/closing someone else's MR is review work, not the MR's task
+                              "review": bool(author and author != me.get("username"))})
                 continue
             elif ttype in ("Issue", "WorkItem") and iid:
                 title, url = f"{title} #{iid}", f"{web}/-/issues/{iid}"
         items.append({"source": "gitlab", "time": _local(ev["created_at"]), "project": proj,
                       "kind": kind, "title": title, "url": url})
+        if review_note:
+            items[-1]["review"] = True
 
-    # Full commit messages for projects pushed to that day (push events only carry one title).
-    for pid in pushed:
-        proj = gl.project(pid)
+    mine = lambda c: c.get("author_email", "").lower() in emails or c.get("author_name", "").lower() in names
+
+    # Which branches each commit was pushed to, and pushes that carried other people's commits.
+    sha_branches: dict[str, set] = {}
+    candidates: dict[tuple, dict] = {}  # (pid, sha) → commit; only from what *you* pushed / MRs you touched
+    for pid, push, pitem in pushes:
+        frm = push.get("commit_from")
+        if not frm or set(frm) == {"0"}:
+            frm = gl.project(pid).get("default_branch") or "main"
         try:
-            for c in gl.paged(f"/projects/{pid}/repository/commits", all="true",
-                              since=(start - timedelta(days=7)).isoformat(), until=end.isoformat()):
-                if c.get("author_email", "").lower() not in emails and c.get("author_name", "").lower() not in names:
-                    continue
-                if len(c.get("parent_ids") or []) > 1 or not _in_day(c["authored_date"], start, end):
-                    continue  # merge commit, or authored another day (since/until use committed date)
-                items.append({"source": "gitlab", "time": _local(c["authored_date"]),
-                              "project": proj["path_with_namespace"], "kind": "commit", "title": c["title"],
-                              "message": (c.get("message") or "")[:2000], "url": c.get("web_url", ""), "sha": c["id"]})
+            cmp_ = gl.get(f"/projects/{pid}/repository/compare", **{"from": frm, "to": push["commit_to"]})
+        except requests.RequestException:
+            continue
+        commits = cmp_.get("commits") or []
+        for c in commits:
+            sha_branches.setdefault(c["id"], set()).add(push["ref"])
+            candidates.setdefault((pid, c["id"]), c)
+        if any(len(c.get("parent_ids") or []) > 1 for c in commits):
+            continue  # a merge into the target branch: others' commits are expected there
+        foreign = [{"sha": c["id"][:8], "title": c["title"], "author": f"{c.get('author_name')} <{c.get('author_email')}>"}
+                   for c in commits if not mine(c)]
+        if foreign:
+            pitem["foreign_authors"] = foreign  # you pushed commits authored as someone else (wrong git identity?)
+
+    # Commits of merge requests you touched (still available after the source branch is deleted / squashed).
+    sha_mrs: dict[str, list] = {}
+    for pid, iid in mrs_seen:
+        mr = gl.merge_request(pid, iid)
+        try:
+            for c in gl.paged(f"/projects/{pid}/merge_requests/{iid}/commits"):
+                candidates.setdefault((pid, c["id"]), c)
+                sha_mrs.setdefault(c["id"], []).append({"iid": iid, "title": mr.get("title", ""),
+                                                        "description": (mr.get("description") or "")[:2000],
+                                                        "source_branch": mr.get("source_branch", "")})
+        except requests.RequestException:
+            pass
+
+    # Branches you pushed to that still exist: their recent commits (covers new-branch pushes later merged).
+    # NOTE: not the repo-wide `all=true` listing — on busy repos it can return only part of the history.
+    for pid, push, _ in pushes:
+        try:
+            for c in gl.paged(f"/projects/{pid}/repository/commits", ref_name=push["ref"],
+                              since=(start - timedelta(days=7)).isoformat(), until=(end + timedelta(days=1)).isoformat()):
+                candidates.setdefault((pid, c["id"]), c)
+        except requests.RequestException:
+            pass  # branch deleted since (merged) — MR commits cover it
+
+    # Your commits authored that day, with full message and stats.
+    for (pid, sha), c in sorted(candidates.items(), key=lambda kv: kv[1].get("authored_date", "")):
+        proj = gl.project(pid)
+        if not mine(c) or len(c.get("parent_ids") or []) > 1 or not _in_day(c["authored_date"], start, end):
+            continue  # someone else's, a merge commit, or authored another day
+        try:
+            c = gl.get(f"/projects/{pid}/repository/commits/{sha}", stats="true")
         except requests.RequestException as e:
-            warnings.append(f"commits for {proj['path_with_namespace']}: {e}")
+            warnings.append(f"commit {sha[:8]} in {proj['path_with_namespace']}: {e}")
+        if True:
+                stats = c.get("stats") or {}
+                item = {"source": "gitlab", "time": _local(c["authored_date"]),
+                        "project": proj["path_with_namespace"], "kind": "commit", "title": c["title"],
+                        "message": (c.get("message") or "")[:2000], "url": c.get("web_url", ""), "sha": c["id"],
+                        "branches": sorted(sha_branches.get(c["id"], [])), "mrs": sha_mrs.get(c["id"], [])}
+                if stats and not stats.get("total"):
+                    item["empty"] = True  # e.g. OpenProject "Git actions" --allow-empty commit: a link, not work
+                items.append(annotate_commit(item))
     return items
 
 
@@ -205,9 +304,14 @@ def collect_git(start, end, emails: set[str]) -> list[dict]:
             sha, ts, email, subject, body = rec.strip("\n").split("\x1f", 4)
             if (emails and email.lower() not in emails) or not _in_day(ts, start, end):
                 continue
-            items.append({"source": "git", "time": _local(ts), "project": os.path.basename(path),
-                          "repo_path": path, "kind": "commit", "title": subject, "message": body.strip()[:2000],
-                          "url": "", "sha": sha})
+            item = {"source": "git", "time": _local(ts), "project": os.path.basename(path),
+                    "repo_path": path, "kind": "commit", "title": subject, "message": body.strip()[:2000],
+                    "url": "", "sha": sha}
+            changed = subprocess.run(["git", "-C", path, "diff-tree", "--no-commit-id", "--name-only", "-r", sha],
+                                     capture_output=True, text=True).stdout.strip()
+            if not changed:
+                item["empty"] = True
+            items.append(annotate_commit(item))
     return items
 
 
@@ -280,12 +384,20 @@ def collect_day(day: date, clients, emails, primary: str | None, use_git: bool, 
         work += collect_gitlab(gl, day, start, end, emails)
     if use_git:
         work += collect_git(start, end, emails)
-    seen, deduped = set(), []
-    for i in sorted(work, key=lambda i: i["time"]):  # same commit via API + git log, or rebased copies
+    seen: dict = {}
+    deduped = []
+    for i in sorted(work, key=lambda i: (i["time"], i["source"] != "gitlab")):  # API copy first
         key = ("commit", i["title"].strip().lower()) if i["kind"] == "commit" else id(i)
-        if key not in seen:
-            seen.add(key)
+        if key not in seen:   # same commit via API + git log, or rebased copies: keep one, merge what each knows
+            seen[key] = i
             deduped.append(i)
+        else:
+            kept = seen[key]
+            for k, v in i.items():
+                if k not in kept or kept[k] in (None, "", [], {}):
+                    kept[k] = v
+            if i.get("empty") is False or (kept.get("empty") and not i.get("empty", True)):
+                kept.pop("empty", None)
 
     per_project: dict[str, list] = {}
     unassigned = []
@@ -307,8 +419,12 @@ def collect_day(day: date, clients, emails, primary: str | None, use_git: bool, 
         refs_summary: dict = {"ids": {}, "names": {}}
         for i in items:
             i["work_refs"] = work_refs(i, proj.get("work_refs"))
+            inh = inherited_refs(i, proj.get("work_refs"))
+            inh = {k: [v for v in vs if v not in i["work_refs"][k]] for k, vs in inh.items()}
+            if any(inh.values()):
+                i["inherited_refs"] = inh
             for k in ("ids", "names"):
-                for r in i["work_refs"][k]:
+                for r in i["work_refs"][k] + (i.get("inherited_refs") or {}).get(k, []):
                     refs_summary[k][r] = refs_summary[k].get(r, 0) + 1
         times = [i["time"] for i in items]
         projects_out[slug] = {
