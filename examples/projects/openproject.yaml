@@ -8,17 +8,19 @@ meetings:
     - {name: DSM, start: "2026-11-02", weekdays: [mon, wed, fri], hours: 0.5}
   one_off: []
 layout:                         # what the preview shows; OpenProject gets date, hours, work package, comment
-  granularity: per_day
+  granularity: per_work_package  # one time entry per (date, work package)
   columns:
     - {header: Work package, value: work_package} # from OP#123 / "Ref: <name>"; empty → default_work_package
     - {header: Date,         value: date, format: "YYYY-MM-DD"}
     - {header: Hours,        value: hours, format: number}
+    - {header: Activity,     value: ask, default: Development,   # per entry; overrides the destination's activity
+       choices: [Management, Testing, Development, Specification, Support, Other]}
     - {header: Comment,      value: task}
 destinations:
   - type: openproject
-    url_env: OPENPROJECT_URL            # in secrets.env, e.g. https://openproject.example.com
-    token_env: OPENPROJECT_TOKEN        # My account → Access tokens → API → + API token
+    # url_env/token_env come from config.yaml destination_defaults.openproject (set once for all projects);
+    # set them here only for a different server/account, e.g. token_env: OPENPROJECT_TOKEN_CLIENTX
     project: acme-website               # project identifier from its URL
-    activity: Development               # optional (scripts/op.py activities)
+    activity: Development               # default activity (scripts/op.py activities)
     work_package: from_refs             # from_refs | ask | <id> | none (none only works on older versions)
     default_work_package: 101           # bucket for work without a reference, e.g. "General development"

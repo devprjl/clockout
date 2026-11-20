@@ -5,7 +5,8 @@ dest:
   url: https://openproject.example.com        # or url_env: OPENPROJECT_URL
   token_env: OPENPROJECT_TOKEN                # My account → Access tokens → API
   project: my-project                         # project identifier (or numeric id)
-  activity: Development                       # optional; time entry activity name
+  activity: Development                       # optional; time entry activity name (default for every entry)
+                                              #   an entry's fields["Activity"] (e.g. an `ask` column) overrides it
   work_package: from_refs | ask | <id> | none # from_refs/ask: entry fields["Work package"] (set while drafting
                                               #   from OP#123 / "Ref: <name>" in commits/MRs); required on 17+
   default_work_package: <id>                  # optional bucket for entries with no work package (e.g. General development)
@@ -13,7 +14,8 @@ dest:
 
 One time entry per entry with hours (date-only entries are skipped). Before writing, it looks for
 time entries you already logged in that project on those dates and stops, unless --replace-date,
-which deletes only those entries of yours first.
+which deletes only those entries of yours first, or --append, which adds next to them (deletes nothing)
+and skips an entry identical to one already logged (same date, work package, duration and comment).
 """
 from __future__ import annotations
 
@@ -28,6 +30,7 @@ from config import secret
 DESCRIPTION = "log time entries in OpenProject (API v3)"
 REQUIRED = ["token_env", "project"]
 WP_FIELD = "Work package"
+ACTIVITY_FIELD = "Activity"
 
 
 def check(dest) -> list[str]:
@@ -143,7 +146,8 @@ def _payloads(entries, dest) -> list[tuple[dict, dict]]:
         if not wp and dest.get("default_work_package"):
             wp, why = str(dest["default_work_package"]), "default (no reference)"
         out.append((e, {"spentOn": e["date"], "hours": iso_duration(e["hours"]), "comment": comment,
-                        "project": str(dest["project"]), "activity": dest.get("activity") or "(default)",
+                        "project": str(dest["project"]),
+                        "activity": e.get("fields", {}).get(ACTIVITY_FIELD) or dest.get("activity") or "(default)",
                         "workPackage": wp, "why": why}))
     return out
 
@@ -155,13 +159,13 @@ def preview(entries, dest, layout) -> str:
     skipped = len(entries) - len(rows)
     lines = [f"OpenProject time entries → project '{dest['project']}' at {url}"
              f" (activity: {dest.get('activity') or 'server default'}, work package: {dest.get('work_package', 'none')})",
-             "| Date | Hours | Duration sent | Work package | Why this work package | Comment |",
-             "|---|---|---|---|---|---|"]
+             "| Date | Hours | Duration sent | Activity | Work package | Why this work package | Comment |",
+             "|---|---|---|---|---|---|---|"]
     for e, b in rows:
         label = e.get("fields", {}).get(WP_FIELD) or (f"#{b['workPackage']}" if b["workPackage"] else "-")
         if b["workPackage"] and not str(label).lstrip("#OP").startswith(str(b["workPackage"])):
             label = f"#{b['workPackage']}"
-        lines.append(f"| {b['spentOn']} | {float(e['hours']):g} | {b['hours']} | {label} | {b['why'] or '-'} | "
+        lines.append(f"| {b['spentOn']} | {float(e['hours']):g} | {b['hours']} | {b['activity']} | {label} | {b['why'] or '-'} | "
                      + b["comment"].replace("\n", "<br>") + " |")
     lines.append(f"{len(rows)} entries, {sum(float(e['hours']) for e, _ in rows):g}h total"
                  + (f"; {skipped} date-only entr{'y' if skipped == 1 else 'ies'} not sent" if skipped else ""))
@@ -178,12 +182,12 @@ def export(entries, dest, layout, opts) -> str:
     first_wp = next((b["workPackage"] for _, b in _payloads(entries, dest) if b["workPackage"]), None)
     schema = op.schema(proj_href, first_wp)
     wp_key, wp_required = op.wp_link(schema)
-    activity_href = None
-    if dest.get("activity"):
-        acts = op.activities(schema)
-        activity_href = acts.get(str(dest["activity"]).lower())
-        if not activity_href:
-            sys.exit(f"error: openproject: activity {dest['activity']!r} not available; choose one of {sorted(acts)}")
+    acts = op.activities(schema)
+    wanted = {b["activity"] for _, b in _payloads(entries, dest) if b["activity"] != "(default)"}
+    bad = sorted(a for a in wanted if str(a).lower() not in acts)
+    if bad:
+        sys.exit(f"error: openproject: activit{'y' if len(bad) == 1 else 'ies'} {bad} not available; "
+                 f"choose from {sorted(acts)}")
 
     todo = [e for e in entries if e.get("hours") not in ("", None) and float(e["hours"]) > 0]
     dates = sorted({e["date"] for e in todo})
@@ -197,30 +201,45 @@ def export(entries, dest, layout, opts) -> str:
                      f"`work_package` (from_refs/ask/<id>) or `default_work_package` on this destination — "
                      f"missing for {missing}")
     existing = op.my_entries(proj["id"], dates)
+    append = getattr(opts, "append", False)
+    dupes = set()
+    if append:
+        seen = {(x.get("spentOn"), x.get("_links", {}).get(wp_key, {}).get("href", "").rsplit("/", 1)[-1],
+                 x.get("hours"), (x.get("comment") or {}).get("raw", "")) for x in existing}
+        dupes = {i for i, (e, b) in enumerate(_payloads(todo, dest))
+                 if (b["spentOn"], str(b["workPackage"] or ""), b["hours"], b["comment"]) in seen}
     if getattr(opts, "dry_run", False):
+        if append:
+            return (f"dry run: OpenProject {version}, project '{proj['name']}' found; would add {len(todo) - len(dupes)} "
+                    f"entries next to your {len(existing)} existing ones (none deleted)"
+                    + (f"; {len(dupes)} identical entr{'y' if len(dupes) == 1 else 'ies'} skipped" if dupes else "")
+                    + (f", activities {sorted(wanted)} ok" if wanted else ""))
         return (f"dry run: OpenProject {version}, project '{proj['name']}' found; would log {len(todo)} entries"
-                + (f", activity {dest['activity']!r} ok" if activity_href else "")
+                + (f", activities {sorted(wanted)} ok" if wanted else "")
                 + (f"; {len(existing)} of your entries already exist on those dates "
                    f"({'would be replaced' if getattr(opts, 'replace_date', False) else 'would block, needs --replace-date'})"
                    if existing else "; no existing entries on those dates"))
-    if existing and not getattr(opts, "replace_date", False):
+    if existing and not append and not getattr(opts, "replace_date", False):
         sys.exit(f"error: openproject: you already logged {len(existing)} time entr"
                  f"{'y' if len(existing) == 1 else 'ies'} in {proj['identifier']} on "
-                 f"{sorted({e['spentOn'] for e in existing})}; re-run with --replace-date to replace them")
-    for e in existing:
+                 f"{sorted({e['spentOn'] for e in existing})}; re-run with --replace-date to replace them, or --append to add next to them")
+    for e in ([] if append else existing):
         op.req("DELETE", f"/api/v3/time_entries/{e['id']}")
 
     created = []
-    for e, b in _payloads(todo, dest):
+    for i, (e, b) in enumerate(_payloads(todo, dest)):
+        if i in dupes:
+            continue
         if str(dest.get("work_package", "none")) in ("ask", "from_refs") and not b["workPackage"]:
             sys.exit(f"error: openproject: entry {e['date']} needs fields['{WP_FIELD}'] (work package id)")
         links = {"project": {"href": proj_href}}
-        if activity_href:
-            links["activity"] = {"href": activity_href}
+        if b["activity"] != "(default)":
+            links["activity"] = {"href": acts[str(b["activity"]).lower()]}
         if b["workPackage"]:
             links[wp_key] = {"href": f"/api/v3/work_packages/{b['workPackage']}"}
         body = {"hours": b["hours"], "spentOn": b["spentOn"], "comment": {"raw": b["comment"]}, "_links": links}
         res = op.req("POST", "/api/v3/time_entries", data=json.dumps(body))
         created.append(res["id"])
     return (f"logged {len(created)} time entries in '{proj['name']}' (OpenProject {version}); "
-            f"replaced {len(existing)} — {op.base}/projects/{proj['identifier']}/cost_reports")
+            + (f"appended next to {len(existing)} existing, {len(dupes)} duplicates skipped" if append
+               else f"replaced {len(existing)}") + f" — {op.base}/projects/{proj['identifier']}/cost_reports")

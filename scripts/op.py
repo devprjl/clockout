@@ -5,6 +5,7 @@
   op.py logged        --project <slug> --date A[..B]      # what you already logged (to compare/verify)
   op.py resolve       --project <slug> --name "<text>"    # "Ref: <name>" → work package id (exact, then contains)
   op.py resolve       --project <slug> --id 123           # check an OP#123 reference exists in this project
+  op.py delete        --project <slug> --id 8,9           # delete time entries — only your own, in this project
 If the user's OpenProject also exposes its MCP server, Claude may use it for lookups instead;
 time entries are always written by export.py (preview, duplicate guard, replace).
 """
@@ -19,7 +20,7 @@ from sinks.openproject import OpenProject
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["work-packages", "activities", "logged", "resolve"])
+    ap.add_argument("cmd", choices=["work-packages", "activities", "logged", "resolve", "delete"])
     ap.add_argument("--name", default="")
     ap.add_argument("--id", default="")
     ap.add_argument("--project", required=True, help="clockout project slug")
@@ -45,6 +46,23 @@ def main():
         wps = op.req("GET", f"/api/v3/projects/{proj['id']}/work_packages", params={"pageSize": 1})
         first = next((str(w["id"]) for w in wps["_embedded"]["elements"]), None)
         out = sorted(OpenProject.activities(op.schema(proj["_links"]["self"]["href"], first)))
+    elif a.cmd == "delete":
+        me = str(op.me()["id"])
+        ids = [i.strip().lstrip("#") for i in a.id.split(",") if i.strip()]
+        if not ids:
+            raise SystemExit("error: delete needs --id <time entry id>[,<id>…] (see `op.py logged`)")
+        out = []
+        for i in ids:
+            e = op.req("GET", f"/api/v3/time_entries/{i}")
+            owner = e["_links"]["user"]["href"].rstrip("/").split("/")[-1]
+            in_proj = e["_links"]["project"]["href"].rstrip("/").split("/")[-1] == str(proj["id"])
+            if owner != me or not in_proj:
+                out.append({"id": int(i), "deleted": False,
+                            "reason": "not your entry" if owner != me else "entry is in another project"})
+                continue
+            op.req("DELETE", f"/api/v3/time_entries/{i}")
+            out.append({"id": int(i), "deleted": True, "date": e["spentOn"], "hours": e["hours"],
+                        "work_package": (e["_links"].get("entity") or e["_links"].get("workPackage") or {}).get("title")})
     elif a.cmd == "resolve":
         if a.id:
             try:

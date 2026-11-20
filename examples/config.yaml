@@ -20,6 +20,8 @@ sources:
     calendar_id: primary
     dsm_pattern: (?i)\bdsm\b|stand-?up
 
+destination_defaults:             # shared credentials per destination type; a project's destination can override any key
+  openproject: {url_env: OPENPROJECT_URL, token_env: OPENPROJECT_TOKEN}
 ignore:                           # activity you never want on a timesheet
   gitlab_projects: []             # e.g. ["you/dotfiles", "sandbox/*"]
   paths: []

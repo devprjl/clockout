@@ -3,6 +3,7 @@
   export.py --entries .cache/entries-2026-11-20.json             # each project's own destinations
   export.py --entries FILE --to clipboard                        # override destination type(s)
   export.py --entries FILE --replace-date                        # let sheet/API destinations replace same-day rows
+  export.py --entries FILE --append                              # API destinations: add next to same-day entries, delete nothing
   export.py --entries FILE --preview                             # exactly what each destination gets; nothing sent
   export.py --entries FILE --dry-run                             # check against destinations (e.g. OpenProject), write nothing
   export.py --entries FILE --project acme-web                    # one project only (e.g. clipboard, one at a time)
@@ -24,11 +25,15 @@ def main():
     ap.add_argument("--entries")
     ap.add_argument("--to", help="comma-separated destination types, overriding the projects' own")
     ap.add_argument("--replace-date", action="store_true")
+    ap.add_argument("--append", action="store_true",
+                    help="API destinations: add entries next to existing same-day ones; skip exact duplicates")
     ap.add_argument("--preview", action="store_true", help="show exactly what each destination will get; send nothing")
     ap.add_argument("--dry-run", action="store_true", help="contact destinations to check, but write nothing")
     ap.add_argument("--project", help="only export entries of this project slug")
     ap.add_argument("--list", action="store_true")
     opts = ap.parse_args()
+    if opts.append and opts.replace_date:
+        ap.error("--append and --replace-date can't be combined")
 
     if opts.list:
         for name in sinks.AVAILABLE:

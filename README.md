@@ -98,6 +98,8 @@ Everything is plain YAML in `~/.config/clockout/`, and you can edit it by hand. 
 
 **Which days get rows:** non-workdays and holidays get nothing unless you worked. A workday with only meetings gets just the meetings. A workday with nothing gets a date-only row in your main project, so the gap is visible.
 
+**Pushing a draft:** `/clockout` always stops at a preview of exactly what each destination will get. Reply "send it" (or ask for edits: "make #42 2h", "drop the last row", "append, don't replace") and Claude runs the export. The draft is saved in `.cache/entries-<date>.json`, so you can also push it yourself with `scripts/export.py --entries .cache/entries-<date>.json`.
+
 **Pasting:** click the first empty cell of the first column and press **⌘V** / **Ctrl+V**. Each entry becomes one row, and multi-line task lists stay in one cell.
 
 ## Layouts
@@ -147,15 +149,21 @@ Enable the Sheets API in a Google Cloud project, then either:
 - save an OAuth Desktop client as `~/.config/clockout/google/credentials.json` and run `scripts/auth.py sheets`.
 
 ### OpenProject (`openproject`)
-1. In OpenProject: avatar → **My account** → **Access tokens** → **API** → **+ API token**. Put it in `secrets.env` as `OPENPROJECT_TOKEN`, and the instance URL as `OPENPROJECT_URL`.
-2. In the project file, add the destination (see [`examples/projects/openproject.yaml`](examples/projects/openproject.yaml)): the project identifier, an optional activity (Development, Testing…) and the work package. Use a fixed id, or `ask` to have Claude ask per entry. On **OpenProject 17+, time must be logged on a work package**.
+1. In OpenProject: avatar → **My account** → **Access tokens** → **API** → **+ API token**. Put it in `secrets.env` as `OPENPROJECT_TOKEN`, and the instance URL as `OPENPROJECT_URL`. These are set **once** for all your projects through `destination_defaults` in `config.yaml`:
+   ```yaml
+   destination_defaults:
+     openproject: {url_env: OPENPROJECT_URL, token_env: OPENPROJECT_TOKEN}
+   ```
+   A project on a different server or account just sets its own `url_env`/`token_env` on its destination; those win.
+2. In the project file, add the destination (see [`examples/projects/openproject.yaml`](examples/projects/openproject.yaml)): the project identifier, a default activity (Development, Testing…) and the work package. Use a fixed id, `from_refs` (below), or `ask` to have Claude ask per entry. If your team picks the activity per entry, add a layout column `{header: Activity, value: ask, default: Development, choices: [...]}`; each entry's answer overrides the default. On **OpenProject 17+, time must be logged on a work package**.
 3. Lookups that work without admin rights:
    ```bash
    $PY $S/op.py work-packages --project <slug> --query search    # find a work package id
    $PY $S/op.py activities    --project <slug>                   # allowed activities
    $PY $S/op.py logged        --project <slug> --date 2026-11-16..2026-11-20   # what you already logged
+   $PY $S/op.py delete        --project <slug> --id 8,9         # delete your own entries (e.g. duplicates)
    ```
-4. `--preview` lists exactly what will be sent (date, duration, work package, activity, comment). `--dry-run` checks the server (project, permissions, entries you already logged) without writing. Re-running a day is blocked. `--replace-date` deletes and re-logs only **your own** entries for those dates; teammates' entries are never touched.
+4. `--preview` lists exactly what will be sent (date, duration, work package, activity, comment). `--dry-run` checks the server (project, permissions, entries you already logged) without writing. Re-running a day with entries already logged is blocked until you choose: `--append` adds next to them (deletes nothing, skips identical entries; handy for a second run later in the day), or `--replace-date` deletes and re-logs only **your own** entries for those dates. Teammates' entries are never touched.
 
 #### Link commits to work packages
 Mention the work package in a commit message, merge request title/description, or branch name, and clockout logs that work's time on it:

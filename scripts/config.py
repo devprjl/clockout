@@ -20,6 +20,7 @@ import copy
 import fnmatch
 import json
 import os
+import re
 import subprocess
 import sys
 from functools import lru_cache
@@ -51,6 +52,9 @@ DEFAULTS: dict = {
                      "dsm_pattern": r"(?i)\bdsm\b|stand-?up|daily sync|daily scrum"},
     },
     "ignore": {"gitlab_projects": [], "paths": []},
+    # per destination type, settings every project's destination of that type starts from
+    # (e.g. openproject: {url_env, token_env}); a project's own destination keys win
+    "destination_defaults": {},
 }
 
 DEFAULT_LAYOUT = {
@@ -122,6 +126,9 @@ def projects() -> dict[str, dict]:
             p["layout"] = deep_merge(DEFAULT_LAYOUT, {}) if not p.get("layout") else p["layout"]
             p["layout"].setdefault("granularity", "per_day")
             p.setdefault("destinations", [{"type": "clipboard"}])
+            dd = personal().get("destination_defaults") or {}
+            p["destinations"] = [deep_merge(dd.get(str(d.get("type", "")).replace("-", "_"), {}), d)
+                                 for d in p["destinations"]]
             p["_file"] = str(f)
             out[f.stem] = p
     return out
@@ -195,11 +202,30 @@ def ignored(*, gitlab_project: str = "", repo_path: str = "") -> bool:
                 or (repo_path and _under_any(repo_path, ig.get("paths", []))))
 
 
+_CREDS = re.compile(r"^(https?://)[^/@\s]+@", re.I)
+
+
+def redact(url: str) -> str:
+    """https://user:token@host/x or https://token@host/x → https://***@host/x; ssh remotes unchanged."""
+    return _CREDS.sub(r"\1***@", url)
+
+
 def detect(cwd: str) -> dict:
     top = git_toplevel(cwd) or cwd
     remotes = git_remotes(top) if git_toplevel(cwd) else []
-    return {"cwd": cwd, "repo": top if remotes or git_toplevel(cwd) else None, "remotes": remotes,
-            "project": match(repo_path=top, remotes=remotes)}
+    out = {"cwd": cwd, "repo": top if remotes or git_toplevel(cwd) else None,
+           "remotes": [redact(r) for r in remotes], "project": match(repo_path=top, remotes=remotes)}
+    if any(redact(r) != r for r in remotes):
+        out["warnings"] = ["a remote URL has credentials (a token) embedded in it; shown redacted. Suggest revoking "
+                           "that token and using SSH or a credential helper instead"]
+    if out["repo"]:
+        email = subprocess.run(["git", "-C", top, "config", "user.email"], capture_output=True, text=True).stdout.strip()
+        known = [e.lower() for e in personal()["sources"]["git"].get("emails", [])]
+        out["commit_email"] = email
+        if email and email.lower() not in known:
+            out.setdefault("warnings", []).append(f"this repo commits as {email}, which is not in sources.git.emails "
+                                                  "— its commits would be missed")
+    return out
 
 
 def git_repos() -> list[str]:
