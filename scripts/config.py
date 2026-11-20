@@ -163,9 +163,17 @@ def _glob_any(value: str, patterns: list[str]) -> bool:
     return any(fnmatch.fnmatch(value.lower(), p.lower()) for p in patterns or [])
 
 
+_CASE_INSENSITIVE_FS = sys.platform in ("darwin", "win32")  # default macOS/Windows file systems
+
+
+def _norm(path: str) -> str:
+    path = os.path.realpath(expand(path))
+    return path.lower() if _CASE_INSENSITIVE_FS else path
+
+
 def _under_any(path: str, roots: list[str]) -> bool:
-    path = expand(path)
-    return any(path == expand(r) or path.startswith(expand(r) + os.sep) for r in roots or [])
+    path = _norm(path)
+    return any(path == _norm(r) or path.startswith(_norm(r) + os.sep) for r in roots or [])
 
 
 def match(*, gitlab_project: str = "", repo_path: str = "", remotes: list[str] | None = None) -> str | None:
@@ -202,8 +210,8 @@ def git_repos() -> list[str]:
     seen, out = set(), []
     for r in roots:
         r = expand(r)
-        if r not in seen and (Path(r) / ".git").exists():
-            seen.add(r)
+        if _norm(r) not in seen and (Path(r) / ".git").exists():
+            seen.add(_norm(r))
             out.append(r)
     return out
 

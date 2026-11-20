@@ -156,7 +156,8 @@ Enable the Sheets API in a Google Cloud project, then either:
 S=~/.claude/skills/clockout/scripts; PY=~/.claude/skills/clockout/.venv/bin/python
 $PY $S/collect.py --date yesterday             # activity routed per project (JSON)
 $PY $S/config.py detect                        # which project is this folder?
-$PY $S/export.py --entries entries.json --preview
+$PY $S/export.py --entries entries.json --preview   # exactly what each destination gets
+$PY $S/export.py --entries entries.json --dry-run   # check against destinations, write nothing
 $PY $S/export.py --entries entries.json        # each project → its destinations
 ```
 

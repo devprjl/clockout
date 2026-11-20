@@ -3,7 +3,8 @@
   export.py --entries .cache/entries-2026-11-20.json             # each project's own destinations
   export.py --entries FILE --to clipboard                        # override destination type(s)
   export.py --entries FILE --replace-date                        # let sheet/API destinations replace same-day rows
-  export.py --entries FILE --preview                             # print rows per project, export nothing
+  export.py --entries FILE --preview                             # exactly what each destination gets; nothing sent
+  export.py --entries FILE --dry-run                             # check against destinations (e.g. OpenProject), write nothing
   export.py --entries FILE --project acme-web                    # one project only (e.g. clipboard, one at a time)
   export.py --list                                               # available destination types
 """
@@ -23,7 +24,8 @@ def main():
     ap.add_argument("--entries")
     ap.add_argument("--to", help="comma-separated destination types, overriding the projects' own")
     ap.add_argument("--replace-date", action="store_true")
-    ap.add_argument("--preview", action="store_true")
+    ap.add_argument("--preview", action="store_true", help="show exactly what each destination will get; send nothing")
+    ap.add_argument("--dry-run", action="store_true", help="contact destinations to check, but write nothing")
     ap.add_argument("--project", help="only export entries of this project slug")
     ap.add_argument("--list", action="store_true")
     opts = ap.parse_args()
@@ -47,10 +49,37 @@ def main():
         missing = L.missing_asks(entries, lay)
         if missing:
             sys.exit(f"error: {slug}: unanswered columns: {', '.join(missing)}")
+        dests = proj["destinations"]
+        if opts.to:  # pick the project's configured destinations of these types (bare clipboard/tsv always allowed)
+            dests = []
+            for t in (x.strip() for x in opts.to.split(",")):
+                matches = [d for d in proj["destinations"] if d.get("type") == t]
+                if not matches and t not in ("clipboard", "tsv"):
+                    sys.exit(f"error: {slug}: no '{t}' destination configured in this project")
+                dests += matches or [{"type": t}]
         if opts.preview:
-            print(f"## {proj['name']} ({slug})\n" + render_tsv(entries, lay, with_header=True))
+            print(f"## {proj['name']} ({slug})")
+            for d in dests:
+                mod = sinks.get(d["type"])
+                if hasattr(mod, "preview"):
+                    print(f"\n### → {d['type']}\n{mod.preview(entries, d, lay)}")
+                else:
+                    print(f"\n### → {d['type']} (rows in this project's layout)\n" + render_tsv(entries, lay, with_header=True))
             continue
-        dests = ([{"type": t.strip()} for t in opts.to.split(",")] if opts.to else proj["destinations"])
+        if opts.dry_run:
+            for d in dests:
+                mod = sinks.get(d["type"])
+                if d["type"] in ("clipboard", "tsv"):
+                    print(f"{slug} → {d['type']}: dry run: would copy/print {len(entries)} rows")
+                elif d["type"] == "openproject":
+                    try:
+                        print(f"{slug} → {d['type']}: {mod.export(entries, d, lay, opts)}")
+                    except SystemExit as ex:
+                        failed = True
+                        print(f"{slug} → {d['type']}: {ex}", file=sys.stderr)
+                else:
+                    print(f"{slug} → {d['type']}: dry run not supported; would append {len(entries)} rows")
+            continue
         # clipboard holds one thing at a time: with several projects, each overwrites the last
         for d in dests:
             if len(groups) > 1 and d.get("type") == "clipboard":
